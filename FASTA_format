@@ -1,0 +1,184 @@
+import os
+import re
+import glob
+from Bio import SeqIO
+import tempfile
+import shutil
+
+def extract_header_info(header):
+    """Extract accession, species name, and chromosome number from various header formats"""
+    
+    # Target format: >OZ173724.1 Hydra viridissima genome assembly, chromosome: 1
+    target_pattern = r'^>([A-Z]{2}\d+\.\d+)\s+(\w+\s+\w+)\s+genome\s+assembly,\s+chromosome:\s+(\d+)$'
+    if re.match(target_pattern, header):
+        return None  # Already in correct format
+    
+    # Extract accession (letters + numbers + decimal)
+    accession_match = re.search(r'([A-Z]{2}\d+\.\d+)', header)
+    accession = accession_match.group(1) if accession_match else None
+    
+    # Extract species name (two words, genus + species)
+    species_patterns = [
+        r'(\w+\s+\w+)\s+(?:isolate|genome|chromosome)', 
+        r'(\w+\s+\w+)\s+.*chromosome',                  
+        r'>[\w\d\.]+\s+(\w+\s+\w+)',                
+    ]
+    
+    species_name = None
+    for pattern in species_patterns:
+        species_match = re.search(pattern, header)
+        if species_match:
+            species_name = species_match.group(1)
+            break
+    
+    # Extract chromosome number
+    chr_patterns = [
+        r'chromosome[:\s]+(\d+)',      # "chromosome: 1" or "chromosome 1"
+        r'chromosome[:\s]*(\d+)',      # "chromosome1"
+        r'chr[:\s]*(\d+)',             # "chr1" or "chr: 1"
+    ]
+    
+    chr_number = None
+    for pattern in chr_patterns:
+        chr_match = re.search(pattern, header, re.IGNORECASE)
+        if chr_match:
+            chr_number = chr_match.group(1)
+            break
+    
+    return accession, species_name, chr_number
+
+def standardize_header(header):
+    """Convert header to standard format"""
+    
+    # Check if already in correct format
+    target_pattern = r'^>([A-Z]{2}\d+\.\d+)\s+(\w+\s+\w+)\s+genome\s+assembly,\s+chromosome:\s+(\d+)$'
+    if re.match(target_pattern, header.strip()):
+        return header.strip()  # Already correct
+    
+    # Extract components
+    result = extract_header_info(header)
+    if result is None:
+        return header.strip()  # Already in correct format
+    
+    accession, species_name, chr_number = result
+    
+    # Validate we have all required components
+    if not all([accession, species_name, chr_number]):
+        print(f"  ⚠ Warning: Could not extract all components from: {header.strip()}")
+        print(f"    Accession: {accession}, Species: {species_name}, Chr: {chr_number}")
+        return header.strip()  # Return original if can't parse
+    
+    # Create standardized header
+    new_header = f">{accession} {species_name} genome assembly, chromosome: {chr_number}"
+    return new_header
+
+def process_fasta_file(file_path):
+    """Process a single FASTA file to standardize chromosome headers"""
+    
+    print(f"Processing: {os.path.basename(file_path)}")
+    
+    try:
+        # Read all records
+        records = list(SeqIO.parse(file_path, "fasta"))
+        
+        if not records:
+            print(f"  ✗ No sequences found in {file_path}")
+            return False
+        
+        # Check if any headers need modification
+        headers_changed = 0
+        modified_records = []
+        
+        for record in records:
+            original_header = f">{record.description}"
+            new_header = standardize_header(original_header)
+            
+            if new_header != original_header:
+                # Update the record description (remove the '>')
+                record.description = new_header[1:]  # Remove the '>' for SeqIO
+                record.id = new_header.split()[0][1:]  # Set ID to accession
+                headers_changed += 1
+                print(f"  ✓ Changed: {original_header}")
+                print(f"    →      {new_header}")
+            
+            modified_records.append(record)
+        
+        # Only write file if changes were made
+        if headers_changed > 0:
+            # Write to temporary file first
+            temp_file = file_path + ".tmp"
+            SeqIO.write(modified_records, temp_file, "fasta")
+            
+            # Replace original file
+            shutil.move(temp_file, file_path)
+            print(f"  ✓ Updated {headers_changed} headers in {os.path.basename(file_path)}")
+            return True
+        else:
+            print(f"  → No changes needed for {os.path.basename(file_path)}")
+            return False
+            
+    except Exception as e:
+        print(f"  ✗ Error processing {file_path}: {e}")
+        return False
+
+def process_directory(directory_path):
+    """Process all FASTA files in a directory"""
+    
+    # Find all FASTA files
+    fasta_patterns = ["*.fna", "*.fa", "*.fasta"]
+    fasta_files = []
+    
+    for pattern in fasta_patterns:
+        fasta_files.extend(glob.glob(os.path.join(directory_path, pattern)))
+    
+    if not fasta_files:
+        print(f"No FASTA files found in {directory_path}")
+        return
+    
+    print(f"Found {len(fasta_files)} FASTA files to process")
+    print("=" * 60)
+    
+    files_modified = 0
+    total_files = len(fasta_files)
+    
+    for fasta_file in sorted(fasta_files):
+        if process_fasta_file(fasta_file):
+            files_modified += 1
+        print()  # Add blank line between files
+    
+    # Summary
+    print("=" * 60)
+    print("PROCESSING SUMMARY")
+    print("=" * 60)
+    print(f"Files processed: {total_files}")
+    print(f"Files modified: {files_modified}")
+    print(f"Files unchanged: {total_files - files_modified}")
+
+def main():
+    import sys
+    
+    if len(sys.argv) != 2:
+        print("Usage: python chromosome_header_standardizer.py <directory_path>")
+        print("\nThis script will:")
+        print("1. Find all FASTA files (.fna, .fa, .fasta) in the directory")
+        print("2. Standardize chromosome headers to format:")
+        print("   >CODE Genus species genome assembly, chromosome: N")
+        print("3. Leave files unchanged if headers are already in correct format")
+        sys.exit(1)
+    
+    directory_path = sys.argv[1]
+    
+    if not os.path.isdir(directory_path):
+        print(f"Error: {directory_path} is not a valid directory")
+        sys.exit(1)
+    
+    print(f"Standardizing chromosome headers in: {directory_path}")
+    print("Target format: >CODE Genus species genome assembly, chromosome: N")
+    print()
+    
+    process_directory(directory_path)
+    
+    print("\n done")
+
+if __name__ == "__main__":
+    main()
