@@ -12,7 +12,7 @@ def extract_chromosomes_and_rename(input_fasta, output_dir):
     
     # Get the accession from the parent directory name
     parent_dir = os.path.dirname(input_fasta)
-    accession = os.path.basename(parent_dir)  # This will be like GCA_947044365.1 or GCF_947044365.1
+    accession = os.path.basename(parent_dir)  
     
     chromosome_records = []
     species_name = None
